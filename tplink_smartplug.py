@@ -22,6 +22,12 @@
 import argparse
 import socket
 from struct import pack
+from time import sleep
+from datetime import datetime
+import json
+import logging
+
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] (%(levelname)s) %(module)s - %(funcName)s: %(message)s")
 
 version = 0.4
 
@@ -101,6 +107,8 @@ group.add_argument("-c", "--command", metavar="<command>",
                    help="Preset command to send. Choices are: "+", ".join(commands), choices=commands)
 group.add_argument("-j", "--json", metavar="<JSON string>",
                    help="Full JSON string of command to send")
+group.add_argument("--keep-time-updated", action="store_true",
+                   help="Constantly update the time if needed")
 args = parser.parse_args()
 
 
@@ -114,22 +122,50 @@ else:
 
 
 # Send command and receive reply
-try:
-    sock_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock_tcp.settimeout(int(args.timeout))
-    sock_tcp.connect((ip, port))
-    sock_tcp.settimeout(None)
-    sock_tcp.send(encrypt(cmd))
-    data = sock_tcp.recv(2048)
-    sock_tcp.close()
+def send_command(args, ip, port, cmd):
+    try:
+        sock_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock_tcp.settimeout(int(args.timeout))
+        sock_tcp.connect((ip, port))
+        sock_tcp.settimeout(None)
+        sock_tcp.send(encrypt(cmd))
+        data = sock_tcp.recv(2048)
+        sock_tcp.close()
 
-    decrypted = decrypt(data[4:])
+        decrypted = decrypt(data[4:])
+        return decrypted
 
+    except socket.error:
+        logging.error(f"Could not connect to host {ip}:{port}")
+        return None
+
+
+# Normal command
+if not args.keep_time_updated:
+    decrypted = send_command(args, ip, port, cmd)
     if args.quiet:
-        print(decrypted)
+        logging.info(decrypted)
     else:
-        print("Sent:     ", cmd)
-        print("Received: ", decrypted)
+        logging.info("Sent:     ", cmd)
+        logging.info("Received: ", decrypted)
 
-except socket.error:
-    quit(f"Could not connect to host {ip}:{port}")
+# Time updater
+else:
+    while True:
+        try:
+            rsp = send_command(args, ip, port, commands["time"])
+            if rsp:
+                rsp = json.loads(rsp)["time"]["get_time"]
+                time = datetime.now()
+                time_remote = datetime(rsp["year"], rsp["month"], rsp["mday"], rsp["hour"], rsp["min"], rsp["sec"])
+                if abs((time_remote - time).total_seconds()) > 60:
+                    cmd = json.dumps({"time":{"set_timezone":{"year":time.year,"month":time.month,"mday":time.day,"hour":time.hour,"min":time.minute,"sec":time.second,"index":41}}})
+                    decrypted = send_command(args, ip, port, cmd)
+                    logging.info(decrypted)
+                else:
+                    logging.info("Time ok, bypass")
+            else:
+                pass
+        except Exception as e:
+            logging.exception(e)
+        sleep(5)
