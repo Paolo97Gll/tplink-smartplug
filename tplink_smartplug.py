@@ -29,7 +29,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] (%(levelname)s) %(module)s - %(funcName)s: %(message)s")
 
-version = 0.4
+version = 0.4,1
 
 # Check if hostname is valid
 def validHostname(hostname):
@@ -45,12 +45,9 @@ def validPort(port):
         port = int(port)
     except ValueError:
         parser.error("Invalid port number.")
-
     if ((port <= 1024) or (port > 65535)):
         parser.error("Invalid port number.")
-
     return port
-
 
 # Predefined Smart Plug Commands
 # For a full list of commands, consult tplink_commands.txt
@@ -91,7 +88,6 @@ def decrypt(string):
         result += chr(a)
     return result
 
-
 # Parse commandline arguments
 parser = argparse.ArgumentParser(description=f"TP-Link Wi-Fi Smart Plug Client v{version}")
 parser.add_argument("-t", "--target", metavar="<hostname>", required=True,
@@ -111,7 +107,6 @@ group.add_argument("--keep-time-updated", action="store_true",
                    help="Constantly update the time if needed")
 args = parser.parse_args()
 
-
 # Set target IP, port and command to send
 ip = args.target
 port = args.port
@@ -119,7 +114,6 @@ if args.command is None:
     cmd = args.json
 else:
     cmd = commands[args.command]
-
 
 # Send command and receive reply
 def send_command(args, ip, port, cmd):
@@ -131,14 +125,31 @@ def send_command(args, ip, port, cmd):
         sock_tcp.send(encrypt(cmd))
         data = sock_tcp.recv(2048)
         sock_tcp.close()
-
         decrypted = decrypt(data[4:])
         return decrypted
-
     except socket.error:
         logging.error(f"Could not connect to host {ip}:{port}")
         return None
 
+def update_time():
+    try:
+        rsp = send_command(args, ip, port, commands["time"])
+        if rsp:
+            rsp = json.loads(rsp)["time"]["get_time"]
+            time = datetime.now()
+            time_remote = datetime(rsp["year"], rsp["month"], rsp["mday"], rsp["hour"], rsp["min"], rsp["sec"])
+            if abs((time_remote - time).total_seconds()) > 60:
+                cmd = json.dumps({"time":{"set_timezone":{"year":time.year,"month":time.month,"mday":time.day,"hour":time.hour,"min":time.minute,"sec":time.second,"index":41}}})
+                decrypted = send_command(args, ip, port, cmd)
+                logging.info(f"Old time: {time_remote}")
+                logging.info(f"New time: {time}")
+                logging.info(decrypted)
+            else:
+                logging.info("Time ok, bypass")
+        else:
+            pass
+    except Exception as e:
+        logging.exception(e)
 
 # Normal command
 if not args.keep_time_updated:
@@ -146,26 +157,11 @@ if not args.keep_time_updated:
     if args.quiet:
         logging.info(decrypted)
     else:
-        logging.info("Sent:     ", cmd)
-        logging.info("Received: ", decrypted)
+        logging.info(f"Sent:     {cmd}")
+        logging.info(f"Received: {decrypted}")
 
 # Time updater
 else:
     while True:
-        try:
-            rsp = send_command(args, ip, port, commands["time"])
-            if rsp:
-                rsp = json.loads(rsp)["time"]["get_time"]
-                time = datetime.now()
-                time_remote = datetime(rsp["year"], rsp["month"], rsp["mday"], rsp["hour"], rsp["min"], rsp["sec"])
-                if abs((time_remote - time).total_seconds()) > 60:
-                    cmd = json.dumps({"time":{"set_timezone":{"year":time.year,"month":time.month,"mday":time.day,"hour":time.hour,"min":time.minute,"sec":time.second,"index":41}}})
-                    decrypted = send_command(args, ip, port, cmd)
-                    logging.info(decrypted)
-                else:
-                    logging.info("Time ok, bypass")
-            else:
-                pass
-        except Exception as e:
-            logging.exception(e)
+        update_time()
         sleep(5)
